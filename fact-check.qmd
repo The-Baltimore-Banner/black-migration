@@ -1,0 +1,189 @@
+---
+title: "fact-check"
+author: "Ryan Little"
+format: html
+editor: visual
+---
+
+# To run this code, run the init Quarto document first.
+
+```{r}
+
+# Read Big Local News Census 2020 Co-op data
+population <- read_csv("data/05_tract_pl94171_standard_compare_2010_2020.csv") %>%
+  clean_names() %>%
+  lower_df() %>%
+  #filter for the baltimores
+  filter(state_name == "maryland",
+         county_name %in% c("baltimore county", "baltimore city")) %>%
+  #remove superflous columns
+  select(-c(geoid, state_code, state_abbr, state_name, county_code, tract_code, tract_name)) %>%
+  #rename before join
+  rename(geoid = geoid_11) #%>%
+  
+
+#creating city and county specifics
+city_population <- population %>%
+  filter(county_name == "baltimore city")
+
+county_population <- population %>%
+  filter(county_name == "baltimore county")#select(geoid, county_name, contains("x2010_pop"), contains("x2020_pop"))
+
+```
+
+## Quarto
+
+"Once the most loyal segment of the city, African American residents are leading the migration out. While they still make up the majority of the population at 57% of all residents, they are also moving out the fastest."
+
+```{r}
+
+#city black pop summed divided by city total pop
+sum(city_population$x2020_pop_black_non_hisp)/sum(city_population$x2020_pop)
+
+```
+
+"The city has lost more Black residents than white residents with about 57,000 Black residents leaving between 2010 and 2020, according to a Baltimore Banner analysis of U.S. Census Bureau data."
+
+```{r}
+
+#sum of city black pop change
+sum(city_population$raw_change_pop_black_non_hisp)
+
+```
+
+```{r}
+
+#sum of raw change white pop
+sum(city_population$raw_change_pop_white_non_hisp)
+
+```
+
+"That was more than double the drop in white residents."
+
+```{r}
+
+#difference between Black and white population divided by white populatio
+(sum(city_population$raw_change_pop_black_non_hisp)-sum(city_population$raw_change_pop_white_non_hisp))/sum(city_population$raw_change_pop_white_non_hisp)
+
+```
+
+"Growth in the Hispanic, Asian and multiracial populations offset losses in the Black and White population."
+
+```{r}
+
+#sum of raw change of Hispanic
+sum(city_population$raw_change_pop_hisp)
+
+```
+
+```{r}
+
+#sum of raw cahnge of Asian population
+sum(city_population$raw_change_pop_asian_non_hisp)
+
+```
+
+```{r}
+
+#sum of all other racial groups
+sum(city_population$raw_change_pop_aian_non_hisp) +
+sum(city_population$raw_change_pop_nhpi_non_hisp) +
+sum(city_population$raw_change_pop_other_non_hisp) +
+sum(city_population$raw_change_pop_two_plus_non_hisp) 
+
+```
+
+"In Baltimore County, population growth was driven mostly by new Black residents, according to The Banners analysis. An increase of about 46,000 Black residents accounted for most of the 50,000 person increase and the Black population grew faster than than the area as a whole in 15 regional planning districts."
+
+```{r}
+
+#sum raw pop change
+sum(county_population$raw_change_pop)
+
+#sum black pop change
+sum(county_population$raw_change_pop_black_non_hisp)
+
+```
+
+```{r}
+
+#filtering output of init for county regional planning districts that have black pop change higher than overall
+census_by_neighborhoods %>%
+  filter(county == "Baltimore County") %>%
+  select(neighborhood, change_pop, change_pop_black_non_hisp) %>%
+  filter(change_pop_black_non_hisp > change_pop)
+
+```
+
+"Richards grew up in Sandtown-Winchester, one of the majority Black neighborhoods where the population declined --- by 28%, according to the Baltimore Banner analysis."
+
+```{r}
+
+#filter census by neighborhood 
+census_by_neighborhoods %>%
+  filter(neighborhood == "sandtown-winchester") %>%
+  select(neighborhood, change_pop, change_pop_black_non_hisp, pct_change_x2020_pop, pct_change_x2020_pop_black_non_hisp)
+
+```
+
+"Majority-white neighborhoods, such as Locust Point or Roland Park, had less of a population decline or even a population increase."
+
+```{r}
+
+#calculate if total pop incrased, count outcomes and calculate  outcomes
+census_by_neighborhoods %>%
+  filter(county == "Baltimore City") %>%
+  filter(x2020_majority_neighborhood_type == "Majority White") %>%
+  select(neighborhood, pct_change_x2020_pop) %>%
+  mutate(population_increase = case_when(
+    pct_change_x2020_pop > 0 ~ TRUE,
+    TRUE ~ FALSE
+  )) %>%
+  group_by(population_increase) %>%
+  count()
+
+```
+
+"In Locust Point, the total population increased by 43%, and in Roland Park, the population increased by about 1%."
+
+```{r}
+
+#filter for neighborhoods
+census_by_neighborhoods %>%
+  filter(neighborhood %in% c("locust point", "roland park")) %>%
+  select(neighborhood, pct_change_x2020_pop) 
+
+```
+
+"Although a small number, the Black population also increased in both neighborhoods."
+
+```{r}
+
+#filter for neighborhoods
+census_by_neighborhoods %>%
+  filter(neighborhood %in% c("locust point", "roland park")) %>%
+  select(neighborhood, pct_change_x2020_pop_black_non_hisp, change_pop_black_non_hisp)
+
+```
+
+"Citywide, the Black population increased in most majority white neighborhoods while it fell in 93% of majority Black neighborhoods, another indication people were escaping the neglect of Black neighborhoods even when they stay in the city."
+
+```{r}
+
+#filter for city, calculate black pop change, group by neighborhood type and count, calculate percentages
+census_by_neighborhoods %>%
+  filter(county == "Baltimore City") %>%
+  select(neighborhood, x2020_majority_neighborhood_type, pct_change_x2020_pop_black_non_hisp) %>%
+  mutate(black_population_increase = case_when(
+    pct_change_x2020_pop_black_non_hisp > 0 ~ TRUE,
+    TRUE ~ FALSE
+  )) %>%
+  group_by(x2020_majority_neighborhood_type, black_population_increase) %>%
+  count() %>%
+  pivot_wider(values_from = n, names_from = black_population_increase) %>%
+  rename(population_loss = 'FALSE',
+         population_growth = 'TRUE') %>%
+  mutate(percent_lost_pop = population_loss/(population_growth+population_loss))
+  
+
+```

@@ -1,0 +1,349 @@
+---
+title: "init"
+output: html_document
+date: "2023-04-20"
+---
+
+#IMPORT 
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readr)
+library(lwgeom)
+library(janitor)
+library(lubridate)
+library(sf)
+library(lwgeom)
+library(mapview)
+library(rmapshaper)
+library(tidycensus)
+options(digits=3)
+options(scipen=999)
+'%notin%' <- Negate('%in%')
+census_api_key("a52431e412be5ff6c652a021ed9d0903ce4c33ee")
+
+#does a standard group_by and count() with percentage
+grouper <- function(input_df, group_by_column, new_column_name = "n()"){
+  output_df <- input_df %>%
+    group_by(.data[[group_by_column]]) %>%
+    summarise(temp_count = n()) %>%
+    mutate(percent = temp_count/sum(temp_count)*100) %>%
+    arrange(desc(percent)) %>%
+    rename(!!new_column_name := temp_count)
+  return(output_df)
+}
+
+#group/counts every column in input dataframe
+group_count <- function(input_df, group_column_name='n()', state_filter=NA, start_col = 1){
+  column_names <- colnames(input_df)
+  if(!is.na(state_filter)){
+    input_df <- input_df %>%
+      filter(state == state_filter)
+  }
+  for (column in column_names[start_col:length(column_names)]){
+    output <- grouper(input_df, column, group_column_name)
+    print(output)
+  }
+}
+
+grouper_sum <- function(input_df, group_by_column, sum_column, new_column_name = "n()"){
+  output_df <- input_df %>%
+    group_by(.data[[group_by_column]]) %>%
+    summarise(temp_count = sum(.data[[sum_column]])) %>%
+    mutate(percent = temp_count/sum(temp_count)*100) %>%
+    arrange(desc(percent)) %>%
+    rename(!!new_column_name := temp_count)
+  return(output_df)
+  
+}
+
+#lowers case of every character column in a dataframe
+lower_df <- function(input_df){
+  names <- colnames(input_df)
+  output_df <- input_df
+  names <- colnames(output_df)
+  for (name in names){
+    if (is.character(output_df[[name]])){
+      output_df[[name]] <- tolower(output_df[[name]])
+      #print('yes')
+    } else {
+      output_df[[name]] <- output_df[[name]]
+      #print('no')
+    }
+  }
+  return(output_df)
+}
+
+# Function to create a viewport based on another shapefile's centroid
+create_viewport <- function(input_sf, height = 0, width = 0, input_crs = 4326, shift_height = 0, shift_width = 0) {
+  
+  # Calculate the centroid of the input shapefile
+  centroid <- st_centroid(st_union(input_sf))
+  
+  # Extract latitude and longitude from the centroid
+  lat <- st_coordinates(centroid)[1, 2] + shift_height
+  lon <- st_coordinates(centroid)[1, 1] + shift_width
+  
+  # Calculate the extent of the viewport
+  xmin <- lon - (width / 2)
+  xmax <- lon + (width / 2)
+  ymin <- lat - (height / 2)
+  ymax <- lat + (height / 2)
+  
+  # Create a rectangle as an sf object
+  viewport <- st_polygon(list(rbind(c(xmin, ymin),
+                                    c(xmin, ymax),
+                                    c(xmax, ymax),
+                                    c(xmax, ymin),
+                                    c(xmin, ymin))))
+  
+  # Set the CRS of the rectangle
+  viewport <- st_sf(geometry = st_sfc(viewport), crs = st_crs(input_crs))
+  
+  return(viewport)
+  
+}
+
+
+```
+
+
+```{r}
+
+#import AP/BigLocalNews Census data
+population <- read_csv("data/05_tract_pl94171_standard_compare_2010_2020.csv") %>%
+  clean_names() %>%
+  lower_df() %>%
+  filter(state_name == "maryland",
+         county_name %in% c("baltimore county", "baltimore city")) %>%
+  select(-c(geoid, state_code, state_abbr, state_name, county_code, tract_code, tract_name)) %>%
+  rename(geoid = geoid_11) %>%
+  select(geoid, county_name, contains("x2010_pop"), contains("x2020_pop"))
+
+#creating city and county specifics
+city_population <- population %>%
+  filter(county_name == "baltimore city")
+
+county_population <- population %>%
+  filter(county_name == "baltimore county")
+
+#importing neighborhood shape
+neighborhoods <- read_sf("data/shapes/neighborhood/neighborhood.shp") %>%
+  clean_names() %>%
+  lower_df() %>%
+  st_transform(crs = 4326) %>%
+  select(name, geometry) %>%
+  rename(neighborhood = name) %>%
+  mutate(neighborhood_area = st_area(geometry))
+
+#importing county regional planning districts
+planning_districts <- read_sf("data/shapes/2020_Regional_Planning_Districts_(RPD)/2020_Regional_Planning_Districts_(RPD).shp") %>%
+  clean_names() %>%
+  lower_df() %>%
+  st_transform(crs = 4326) %>%
+  filter(jurname == "baltimore county") %>%
+  select(rpdname, geometry) %>%
+  rename(district_name = rpdname) %>%
+  mutate(planning_district_area = st_area(geometry))
+
+#importing 2020 tracts, my census data is already converted 2010 data to new tracts
+tracts <- read_sf("data/shapes/Maryland_Census_Boundaries_-_Census_Tracts_2020/Maryland_Census_Boundaries_-_Census_Tracts_2020.shp") %>%
+  clean_names() %>%
+  lower_df() %>%
+  st_transform(crs = 4326) %>%
+  filter(countyfp20 %in% c("005", "510"))%>%
+  select(countyfp20, geoid20, geometry) %>%
+  tigris::erase_water() %>%
+  mutate(tract_area = st_area(geometry)) %>%
+  rename(geoid = geoid20)
+
+```
+
+## 2020 CITY
+
+```{r}
+
+neighborhood_pops <- st_intersection(neighborhoods, tracts %>%
+                                                  filter(countyfp20 == "510")
+  ) %>%
+  mutate(intersection_area = st_area(geometry))  %>%
+  mutate(percent_tract = as.numeric(intersection_area/tract_area)) %>%
+  full_join(population %>%
+              select(geoid, contains("_pop"))) %>%
+  mutate(across(contains("_pop"), ~ . * percent_tract)) %>%
+  select(-c(neighborhood_area, countyfp20, geoid, tract_area, intersection_area, percent_tract)) %>%
+  group_by(neighborhood) %>%
+  summarise(across(matches("_pop"), sum, na.rm = TRUE)) %>%
+  filter(!is.na(neighborhood))
+
+```
+
+```{r}
+
+print(paste0("City 2020 has a variance of ", round(((sum(neighborhood_pops$x2020_pop) - sum(city_population$x2020_pop))/sum(city_population$x2020_pop))*100, 2), "%."))
+
+print(paste0("City 2010 has a variance of ", round(((sum(neighborhood_pops$x2010_pop) - sum(city_population$x2010_pop))/sum(city_population$x2010_pop))*100, 2), "%."))
+
+```
+
+COUNTY
+
+```{r}
+
+county_pops <- st_intersection(planning_districts, tracts) %>%
+  mutate(intersection_area = st_area(geometry)) %>%
+  mutate(percent_tract = as.numeric(intersection_area/tract_area)) %>%
+  full_join(population %>%
+              select(geoid, contains("_pop"))) %>%
+  mutate(across(contains("_pop"), ~ . * percent_tract)) %>%
+  select(-c(planning_district_area, countyfp20, geoid, tract_area, intersection_area, percent_tract)) %>%
+  group_by(district_name) %>%
+  summarise(across(matches("_pop"), sum, na.rm = TRUE)) %>%
+  filter(!is.na(district_name))
+
+
+```
+
+```{r}
+
+print(paste0("County 2020 has a variance of ", round(((sum(county_pops$x2020_pop) - sum(county_population$x2020_pop))/sum(county_population$x2020_pop))*100, 2), "%."))
+
+print(paste0("County 2010 has a variance of ", round(((sum(county_pops$x2010_pop) - sum(county_population$x2010_pop))/sum(county_population$x2010_pop))*100, 2), "%."))
+
+```
+
+# JOINS
+
+## MAPPING
+
+```{r}
+
+neighborhoods_with_county_planning_districts <- neighborhoods %>%
+  mutate(neighborhood = case_when(
+    neighborhood == "overlea" ~ "overlea-city",
+    TRUE ~ neighborhood
+  )) %>%
+  mutate(county = "Baltimore City") %>%
+  bind_rows(planning_districts %>%
+    rename(neighborhood = district_name) %>%
+    mutate(county = "Baltimore County")) %>%
+  ms_simplify(keep = 0.1)
+  
+
+viewport <- create_viewport(neighborhoods, .3, .45, shift_height = .05)
+
+#st_write(neighborhoods_with_county_planning_districts, "data/output/neighborhoods-with-county-planning-districts.geojson")
+#
+
+mapview(viewport) +
+  mapview(neighborhoods_with_county_planning_districts)
+
+viz_neighborhoods_with_county_planning_districts <- st_intersection(neighborhoods_with_county_planning_districts, viewport)
+
+mapview(viz_neighborhoods_with_county_planning_districts)
+
+st_write(viz_neighborhoods_with_county_planning_districts, "data/output/viewport-neighborhoods-with-county-planning-districts.geojson")
+
+```
+
+## DATA
+
+```{r}
+
+# Create a function to assign colors
+color_assign <- function(x) {
+  ifelse(x > 0, "green", "red")
+}
+
+census_by_neighborhoods <- neighborhood_pops %>%
+  mutate(neighborhood = case_when(
+    neighborhood == "overlea" ~ "overlea-city",
+    TRUE ~ neighborhood
+ )) %>%
+ mutate(county = "Baltimore City") %>%
+ bind_rows(county_pops %>%
+             rename(neighborhood = district_name) %>%
+             mutate(county = "Baltimore County")) %>%
+ st_drop_geometry() %>%
+  #calculating raw change between 2020 and 2010
+  mutate(across(starts_with("x2020_"), 
+                ~ .x - get(paste0("x2010_", gsub("x2020_", "", cur_column()))), 
+                .names = "change_{col}")) %>%
+  rename_with(~gsub("change_x2020_", "change_", .), starts_with("change_x2020_")) %>%
+  #calculating perc change between 2020 and 2010
+  mutate(across(starts_with("x2020_"), 
+                ~ (.x - get(paste0("x2010_", gsub("x2020_", "", cur_column())))) / get(paste0("x2010_", gsub("x2020_", "", cur_column()))) * 100,
+                .names = "pct_change_x2020_{col}")) %>%
+  rename_with(~gsub("pct_change_x2020_", "pct_change_", .), starts_with("pct_change_x2020_")) %>%
+  #calculating share of neighborhood by race
+  mutate(
+    x2010_pop_white_non_hisp_share = (x2010_pop_white_non_hisp/x2010_pop)*100,
+    x2010_pop_black_non_hisp_share = (x2010_pop_black_non_hisp/x2010_pop)*100,
+    x2010_pop_hisp_share = (x2010_pop_hisp/x2010_pop)*100,
+    #2020
+    x2020_pop_white_non_hisp_share = (x2020_pop_white_non_hisp/x2020_pop)*100,
+    x2020_pop_black_non_hisp_share = (x2020_pop_black_non_hisp/x2020_pop)*100,
+    x2020_pop_hisp_share = (x2020_pop_hisp/x2020_pop)*100,
+  ) %>%
+  #changing key for city overlea (there are 2)
+  mutate(viz_name = case_when(
+    neighborhood == "overlea-city" ~ "Overlea",
+    TRUE ~ str_to_title(neighborhood)
+  )) %>%
+  #calculating majority neighborhoods
+  mutate(
+    x2020_majority_neighborhood_type = case_when(
+      x2020_pop_black_non_hisp/x2020_pop >= .5 ~ "Majority Black",
+      x2020_pop_white_non_hisp/x2020_pop >= .5 ~ "Majority White",
+      x2020_pop_hisp/x2020_pop >= .5 ~ "Majority Hispanic",
+    TRUE ~ "Majority Minority"
+  )) %>%
+  #calculating majority neighborhoods
+  mutate(
+      x2010_majority_neighborhood_type = case_when(
+      x2010_pop_black_non_hisp/x2010_pop >= .5 ~ "Majority Black",
+      x2010_pop_white_non_hisp/x2010_pop >= .5 ~ "Majortiy White",
+      x2010_pop_hisp/x2010_pop >= .5 ~ "Majority Hispanic",
+    TRUE ~ "Majority Minority"
+  )) %>%
+  #calculating if the majority changed
+  mutate(
+      majority_changed = case_when(
+      x2020_majority_neighborhood_type == x2010_majority_neighborhood_type ~ "No",
+    TRUE ~ "Yes"
+  ))
+
+#making viz version
+viz_census_by_neighborhoods <- census_by_neighborhoods %>%
+  #relocating
+  relocate(neighborhood, viz_name) %>%
+  #creating color key for viz
+  mutate(across(starts_with("pct_change_x2020_pop"), 
+                list(color = ~color_assign(.x)),
+                .names = "color_{.col}")) %>%
+  #rounding outputs for viz
+  mutate(across(where(is.numeric) & !contains("pct"), round))  %>%
+  #rounding percentages to 1 decimal
+  mutate(across(contains("pct") & !contains("color"), round, digits = 1)) %>%
+  #adding commas for viz
+  mutate(viz_x2020_pop_white_non_hisp = formatC(x2020_pop_white_non_hisp, format = "f", big.mark = ",", digits = 0, drop0trailing = TRUE),
+           viz_x2020_pop_black_non_hisp = formatC(x2020_pop_black_non_hisp, format = "f", big.mark = ",", digits = 0, drop0trailing = TRUE),
+           viz_x2020_pop_hisp = formatC(x2020_pop_hisp, format = "f", big.mark = ",", digits = 0, drop0trailing = TRUE),
+         viz_x2020_pop = formatC(x2020_pop, format = "f", big.mark = ",", digits = 0, drop0trailing = TRUE),
+         )
+
+#write_csv(census_by_neighborhoods, "data/output/viz-data-output.csv")
+
+
+```
+
+
+
+
+
+
+
+
